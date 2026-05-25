@@ -11,7 +11,10 @@ pub enum ContractError {
 
     #[error("Already approved")]
     AlreadyApproved {},
-    
+
+    #[error("Invalid threshold")]
+    InvalidThreshold {},
+
     #[error("Not enough approvals")]
     NotEnoughApprovals {},
 }

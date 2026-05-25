@@ -15,6 +15,10 @@ pub fn instantiate(
     _info: MessageInfo,
     msg: InstantiateMsg,
 ) -> Result<Response, ContractError> {
+    if msg.threshold == 0 || msg.threshold as usize > msg.signers.len() {
+        return Err(ContractError::InvalidThreshold {});
+    }
+
     let config = Config {
         signers: msg.signers,
         threshold: msg.threshold,
@@ -38,7 +42,11 @@ pub fn execute(
     }
 }
 
-pub fn execute_propose(deps: DepsMut, info: MessageInfo, msg: CosmosMsg) -> Result<Response, ContractError> {
+pub fn execute_propose(
+    deps: DepsMut,
+    info: MessageInfo,
+    msg: CosmosMsg,
+) -> Result<Response, ContractError> {
     let config = CONFIG.load(deps.storage)?;
     if !config.signers.contains(&info.sender.to_string()) {
         return Err(ContractError::Unauthorized {});
@@ -56,7 +64,11 @@ pub fn execute_propose(deps: DepsMut, info: MessageInfo, msg: CosmosMsg) -> Resu
     Ok(Response::new().add_attribute("action", "propose"))
 }
 
-pub fn execute_approve(deps: DepsMut, info: MessageInfo, id: u64) -> Result<Response, ContractError> {
+pub fn execute_approve(
+    deps: DepsMut,
+    info: MessageInfo,
+    id: u64,
+) -> Result<Response, ContractError> {
     let config = CONFIG.load(deps.storage)?;
     if !config.signers.contains(&info.sender.to_string()) {
         return Err(ContractError::Unauthorized {});
@@ -81,7 +93,11 @@ pub fn execute_exec(deps: DepsMut, id: u64) -> Result<Response, ContractError> {
         return Err(ContractError::NotEnoughApprovals {});
     }
 
-    Ok(Response::new().add_message(prop.msg).add_attribute("action", "execute"))
+    PROPOSALS.remove(deps.storage, id);
+
+    Ok(Response::new()
+        .add_message(prop.msg)
+        .add_attribute("action", "execute"))
 }
 
 #[cfg_attr(not(feature = "library"), entry_point)]
@@ -93,7 +109,9 @@ pub fn query(deps: Deps, _env: Env, msg: QueryMsg) -> StdResult<Binary> {
 
 fn query_prop(deps: Deps, id: u64) -> StdResult<ProposalResponse> {
     let prop = PROPOSALS.load(deps.storage, id)?;
-    Ok(ProposalResponse { approvals: prop.approvals.len() as u64 })
+    Ok(ProposalResponse {
+        approvals: prop.approvals.len() as u64,
+    })
 }
 
 #[cfg(test)]
@@ -112,5 +130,85 @@ mod tests {
         let info = mock_info("creator", &[]);
         let res = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap();
         assert_eq!(0, res.messages.len());
+    }
+
+    #[test]
+    fn reject_invalid_thresholds() {
+        let mut deps = mock_dependencies();
+        let err = instantiate(
+            deps.as_mut(),
+            mock_env(),
+            mock_info("creator", &[]),
+            InstantiateMsg {
+                signers: vec!["a".to_string(), "b".to_string()],
+                threshold: 0,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(err, ContractError::InvalidThreshold {});
+
+        let err = instantiate(
+            deps.as_mut(),
+            mock_env(),
+            mock_info("creator", &[]),
+            InstantiateMsg {
+                signers: vec!["a".to_string(), "b".to_string()],
+                threshold: 3,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(err, ContractError::InvalidThreshold {});
+    }
+
+    #[test]
+    fn executed_proposal_cannot_be_replayed() {
+        let mut deps = mock_dependencies();
+        instantiate(
+            deps.as_mut(),
+            mock_env(),
+            mock_info("creator", &[]),
+            InstantiateMsg {
+                signers: vec!["a".to_string(), "b".to_string()],
+                threshold: 2,
+            },
+        )
+        .unwrap();
+
+        let send_msg = CosmosMsg::Bank(BankMsg::Send {
+            to_address: "recipient".to_string(),
+            amount: coins(1, "earth"),
+        });
+        execute(
+            deps.as_mut(),
+            mock_env(),
+            mock_info("a", &[]),
+            ExecuteMsg::Propose { msg: send_msg },
+        )
+        .unwrap();
+        execute(
+            deps.as_mut(),
+            mock_env(),
+            mock_info("b", &[]),
+            ExecuteMsg::Approve { proposal_id: 0 },
+        )
+        .unwrap();
+
+        let res = execute(
+            deps.as_mut(),
+            mock_env(),
+            mock_info("a", &[]),
+            ExecuteMsg::Execute { proposal_id: 0 },
+        )
+        .unwrap();
+        assert_eq!(res.messages.len(), 1);
+
+        let err = execute(
+            deps.as_mut(),
+            mock_env(),
+            mock_info("a", &[]),
+            ExecuteMsg::Execute { proposal_id: 0 },
+        )
+        .unwrap_err();
+        assert!(matches!(err, ContractError::Std(_)));
     }
 }
