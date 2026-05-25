@@ -16,7 +16,10 @@ pub fn instantiate(
     msg: InstantiateMsg,
 ) -> Result<Response, ContractError> {
     let config = Config {
-        ticket_price: msg.ticket_price.parse().unwrap_or(0),
+        ticket_price: msg
+            .ticket_price
+            .parse()
+            .map_err(|_| ContractError::InvalidTicketPrice {})?,
         ticket_denom: msg.ticket_denom,
         winner: "".to_string(),
     };
@@ -43,7 +46,7 @@ pub fn execute_buy_ticket(deps: DepsMut, info: MessageInfo) -> Result<Response, 
     if !config.winner.is_empty() {
         return Err(ContractError::WinnerAlreadyDrawn {});
     }
-    
+
     let coin = info
         .funds
         .iter()
@@ -75,7 +78,7 @@ pub fn execute_draw(deps: DepsMut, env: Env) -> Result<Response, ContractError> 
     // Pseudo-random selection based on block time
     let idx = (env.block.time.seconds() as usize) % tickets.len();
     let winner = tickets[idx].clone();
-    
+
     config.winner = winner.clone();
     CONFIG.save(deps.storage, &config)?;
 
@@ -121,6 +124,20 @@ mod tests {
         let info = mock_info("creator", &[]);
         let res = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap();
         assert_eq!(0, res.messages.len());
+    }
+
+    #[test]
+    fn reject_invalid_ticket_price() {
+        let mut deps = mock_dependencies();
+        let msg = InstantiateMsg {
+            ticket_price: "not-a-number".to_string(),
+            ticket_denom: "earth".to_string(),
+        };
+        let info = mock_info("creator", &[]);
+
+        let err = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap_err();
+
+        assert_eq!(err, ContractError::InvalidTicketPrice {});
     }
 
     #[test]

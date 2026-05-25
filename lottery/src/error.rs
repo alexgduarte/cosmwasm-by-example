@@ -11,7 +11,10 @@ pub enum ContractError {
 
     #[error("No players")]
     NoPlayers {},
-    
+
+    #[error("Invalid ticket price")]
+    InvalidTicketPrice {},
+
     #[error("Winner already drawn")]
     WinnerAlreadyDrawn {},
 }
