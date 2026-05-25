@@ -9,12 +9,15 @@ pub enum ContractError {
     #[error("Insufficient funds")]
     InsufficientFunds {},
 
+    #[error("Invalid price")]
+    InvalidPrice {},
+
     #[error("Too early to claim")]
     TooEarlyToClaim {},
-    
+
     #[error("No subscription")]
     NoSubscription {},
-    
+
     #[error("Unauthorized")]
     Unauthorized {},
 }

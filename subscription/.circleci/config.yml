@@ -36,7 +36,7 @@ jobs:
           command: |
             docker tag "cosmwasm/cw-gitpod-base:${CIRCLE_SHA1}" "cosmwasm/cw-gitpod-base:${CIRCLE_TAG}"
             docker login --password-stdin -u "$DOCKER_USER" \<<<"$DOCKER_PASS"
-            docker push
+            docker push "cosmwasm/cw-gitpod-base:${CIRCLE_TAG}"
             docker logout
 
 workflows:

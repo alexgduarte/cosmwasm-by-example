@@ -1,7 +1,8 @@
 #[cfg(not(feature = "library"))]
 use cosmwasm_std::entry_point;
 use cosmwasm_std::{
-    to_binary, BankMsg, Binary, Coin, Deps, DepsMut, Env, MessageInfo, Response, StdResult, Uint128,
+    to_binary, BankMsg, Binary, Coin, Deps, DepsMut, Env, MessageInfo, Order, Response, StdResult,
+    Uint128,
 };
 
 use crate::error::ContractError;
@@ -17,7 +18,10 @@ pub fn instantiate(
 ) -> Result<Response, ContractError> {
     let config = Config {
         provider: msg.provider,
-        price: msg.price.parse().unwrap_or(0),
+        price: msg
+            .price
+            .parse()
+            .map_err(|_| ContractError::InvalidPrice {})?,
         denom: msg.denom,
         interval_seconds: msg.interval_seconds,
     };
@@ -39,9 +43,13 @@ pub fn execute(
     }
 }
 
-pub fn execute_subscribe(deps: DepsMut, env: Env, info: MessageInfo) -> Result<Response, ContractError> {
+pub fn execute_subscribe(
+    deps: DepsMut,
+    env: Env,
+    info: MessageInfo,
+) -> Result<Response, ContractError> {
     let config = CONFIG.load(deps.storage)?;
-    
+
     let coin = info
         .funds
         .iter()
@@ -57,21 +65,56 @@ pub fn execute_subscribe(deps: DepsMut, env: Env, info: MessageInfo) -> Result<R
 
     let msg = BankMsg::Send {
         to_address: config.provider,
-        amount: vec![Coin { denom: config.denom, amount: Uint128::from(config.price) }],
+        amount: vec![Coin {
+            denom: config.denom,
+            amount: Uint128::from(config.price),
+        }],
     };
 
-    Ok(Response::new().add_attribute("action", "subscribe").add_message(msg))
+    Ok(Response::new()
+        .add_attribute("action", "subscribe")
+        .add_message(msg))
 }
 
-pub fn execute_claim(deps: DepsMut, env: Env, info: MessageInfo) -> Result<Response, ContractError> {
+pub fn execute_claim(
+    deps: DepsMut,
+    env: Env,
+    info: MessageInfo,
+) -> Result<Response, ContractError> {
     let config = CONFIG.load(deps.storage)?;
-    if info.sender != config.provider {
+    if info.sender.as_str() != config.provider {
         return Err(ContractError::Unauthorized {});
     }
-    
-    // In a real app we'd iterate over subs or pass the specific user. 
-    // This is a simplified version where the provider claims if any are valid.
-    return Err(ContractError::Unauthorized {}); // Dummy implementation
+
+    let now = env.block.time.seconds();
+    let mut saw_subscription = false;
+    let mut due_subscriber = None;
+
+    for item in SUBSCRIPTIONS.range(deps.storage, None, None, Order::Ascending) {
+        let (subscriber, next_claim) = item?;
+        saw_subscription = true;
+
+        if next_claim <= now {
+            due_subscriber = Some(subscriber);
+            break;
+        }
+    }
+
+    if let Some(subscriber) = due_subscriber {
+        let new_next_claim = now + config.interval_seconds;
+        SUBSCRIPTIONS.save(deps.storage, subscriber.as_str(), &new_next_claim)?;
+
+        return Ok(Response::new()
+            .add_attribute("action", "claim")
+            .add_attribute("subscriber", subscriber)
+            .add_attribute("next_claim", new_next_claim.to_string()));
+    }
+
+    if saw_subscription {
+        Err(ContractError::TooEarlyToClaim {})
+    } else {
+        Err(ContractError::NoSubscription {})
+    }
 }
 
 pub fn execute_cancel(deps: DepsMut, info: MessageInfo) -> Result<Response, ContractError> {
@@ -109,5 +152,69 @@ mod tests {
         let info = mock_info("creator", &[]);
         let res = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap();
         assert_eq!(0, res.messages.len());
+    }
+
+    #[test]
+    fn reject_invalid_price() {
+        let mut deps = mock_dependencies();
+        let msg = InstantiateMsg {
+            provider: "provider".to_string(),
+            price: "not-a-number".to_string(),
+            denom: "earth".to_string(),
+            interval_seconds: 3600,
+        };
+        let info = mock_info("creator", &[]);
+
+        let err = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap_err();
+
+        assert_eq!(err, ContractError::InvalidPrice {});
+    }
+
+    #[test]
+    fn provider_can_claim_due_subscription() {
+        let mut deps = mock_dependencies();
+        let msg = InstantiateMsg {
+            provider: "provider".to_string(),
+            price: "100".to_string(),
+            denom: "earth".to_string(),
+            interval_seconds: 3600,
+        };
+        instantiate(deps.as_mut(), mock_env(), mock_info("creator", &[]), msg).unwrap();
+
+        let mut env = mock_env();
+        env.block.time = cosmwasm_std::Timestamp::from_seconds(100);
+        execute(
+            deps.as_mut(),
+            env.clone(),
+            mock_info("subscriber", &coins(100, "earth")),
+            ExecuteMsg::Subscribe {},
+        )
+        .unwrap();
+
+        let err = execute(
+            deps.as_mut(),
+            env.clone(),
+            mock_info("provider", &[]),
+            ExecuteMsg::Claim {},
+        )
+        .unwrap_err();
+        assert_eq!(err, ContractError::TooEarlyToClaim {});
+
+        env.block.time = cosmwasm_std::Timestamp::from_seconds(3700);
+        let res = execute(
+            deps.as_mut(),
+            env,
+            mock_info("provider", &[]),
+            ExecuteMsg::Claim {},
+        )
+        .unwrap();
+
+        assert_eq!(res.attributes[0].value, "claim");
+        assert_eq!(
+            query_sub(deps.as_ref(), "subscriber".to_string())
+                .unwrap()
+                .next_claim,
+            7300
+        );
     }
 }
