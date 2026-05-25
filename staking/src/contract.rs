@@ -56,8 +56,10 @@ pub fn execute_unstake(
     amount: String,
 ) -> Result<Response, ContractError> {
     let config = CONFIG.load(deps.storage)?;
-    let amount_u128 = amount.parse::<u128>().unwrap_or(0);
-    
+    let amount_u128 = amount
+        .parse::<u128>()
+        .map_err(|_| ContractError::InvalidAmount {})?;
+
     let mut current_stake = STAKES.load(deps.storage, info.sender.as_str()).unwrap_or_default();
     if current_stake < amount_u128 {
         return Err(ContractError::InsufficientFunds {});
@@ -68,7 +70,10 @@ pub fn execute_unstake(
 
     let msg = BankMsg::Send {
         to_address: info.sender.to_string(),
-        amount: vec![Coin { denom: config.token_denom, amount: Uint128::from(amount_u128) }],
+        amount: vec![Coin {
+            denom: config.token_denom,
+            amount: Uint128::from(amount_u128),
+        }],
     };
 
     Ok(Response::new()
@@ -121,5 +126,29 @@ mod tests {
 
         let res = query_staked(deps.as_ref(), "user".to_string()).unwrap();
         assert_eq!(res.amount, "100");
+    }
+
+    #[test]
+    fn reject_invalid_unstake_amount() {
+        let mut deps = mock_dependencies();
+        let msg = InstantiateMsg {
+            token_denom: "earth".to_string(),
+        };
+        instantiate(deps.as_mut(), mock_env(), mock_info("creator", &[]), msg).unwrap();
+
+        let info = mock_info("user", &coins(100, "earth"));
+        execute(deps.as_mut(), mock_env(), info, ExecuteMsg::Stake {}).unwrap();
+
+        let err = execute(
+            deps.as_mut(),
+            mock_env(),
+            mock_info("user", &[]),
+            ExecuteMsg::Unstake {
+                amount: "not-a-number".to_string(),
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(err, ContractError::InvalidAmount {});
     }
 }

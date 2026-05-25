@@ -8,4 +8,7 @@ pub enum ContractError {
 
     #[error("Insufficient funds")]
     InsufficientFunds {},
+
+    #[error("Invalid amount")]
+    InvalidAmount {},
 }
